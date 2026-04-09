@@ -382,3 +382,81 @@ describe('iframe detection', () => {
     expect(postMessageSpy).not.toHaveBeenCalled();
   });
 });
+
+// ── Contract: send:confirmed ──────────────────────────────
+
+describe('send:confirmed', () => {
+  it('fires when message_sent event triggers after a send', async() => {
+    await initBridge();
+
+    const handler = listeners['message_sent'];
+    expect(handler).toBeDefined();
+
+    handler({
+      storageKey: 'test',
+      tempId: 9999,
+      tempMessage: {},
+      mid: 12345,
+      message: {
+        peerId: '100',
+        fromId: '100',
+        mid: 12345,
+        message: 'Ha bor aka',
+        date: 1700000000,
+        pFlags: {out: true},
+        media: null,
+        reply_to: null
+      }
+    });
+
+    const event = findPost('send:confirmed');
+    expect(event).toBeDefined();
+    expect(event.payload.chatId).toBe('100');
+    expect(event.payload.messageId).toBe(12345);
+    expect(event.payload.tempId).toBe(9999);
+  });
+});
+
+// ── Contract: navigate:chat ───────────────────────────────
+
+describe('navigate:chat', () => {
+  it('calls setInnerPeer when navigate:chat command received', async() => {
+    (String.prototype as any).toPeerId = function() { return this; };
+
+    await initBridge();
+
+    window.dispatchEvent(new MessageEvent('message', {
+      data: {type: 'navigate:chat', payload: {chatId: '555'}}
+    }));
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    const {default: appImManager} = await import('@lib/appImManager');
+    expect(appImManager.setInnerPeer).toHaveBeenCalledWith({peerId: '555'});
+
+    delete (String.prototype as any).toPeerId;
+  });
+});
+
+// ── Contract: send:message ────────────────────────────────
+
+describe('send:message', () => {
+  it('calls sendText when send:message command received', async() => {
+    (String.prototype as any).toPeerId = function() { return this; };
+
+    await initBridge();
+
+    window.dispatchEvent(new MessageEvent('message', {
+      data: {type: 'send:message', payload: {chatId: '777', text: 'Draft approved!'}}
+    }));
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockManagers.appMessagesManager.sendText).toHaveBeenCalledWith({
+      peerId: '777',
+      text: 'Draft approved!'
+    });
+
+    delete (String.prototype as any).toPeerId;
+  });
+});

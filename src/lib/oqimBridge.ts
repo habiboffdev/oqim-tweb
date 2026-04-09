@@ -208,6 +208,16 @@ export function initOqimBridge() {
     });
   });
 
+  // send:confirmed — delivery confirmation after sendText
+  rootScope.addEventListener('message_sent', ({tempId, mid, message}) => {
+    const m = message as any;
+    postToParent('send:confirmed', {
+      chatId: String(m.peerId),
+      messageId: mid,
+      tempId
+    });
+  });
+
   // dialog:update — dialog changes (new message, read state, etc.)
   rootScope.addEventListener('dialogs_multiupdate', (updates) => {
     const dialogs: ReturnType<typeof serializeDialog>[] = [];
