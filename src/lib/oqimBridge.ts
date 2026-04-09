@@ -49,7 +49,9 @@ function postToParent(type: string, payload: unknown) {
 
 async function handleParentCommand(event: MessageEvent) {
   const data = event.data;
-  if(!data?.type?.startsWith('oqim:')) return;
+  if(!data?.type || typeof data.type !== 'string') return;
+  const validPrefixes = ['navigate:', 'send:', 'request:', 'ping'];
+  if(!validPrefixes.some((p) => data.type.startsWith(p))) return;
 
   const managers = rootScope.managers;
   if(!managers) return;
