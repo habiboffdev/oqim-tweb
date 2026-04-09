@@ -1,50 +1,38 @@
 /*
  * OQIM Business — postMessage bridge for parent frame communication.
+ * Issue #37: https://github.com/habiboffdev/oqim-business/issues/37
  *
- * This module bridges the Telegram Web K fork with the OQIM parent app
- * via the postMessage API. It provides:
- *
- * 1. Incoming message events → parent (for AI draft generation)
- * 2. Dialog list updates → parent (for unified chat list)
- * 3. Chat navigation ← parent (open specific chat)
- * 4. Send-on-behalf ← parent (send approved AI drafts)
- * 5. Auth state → parent (login status)
+ * Event schema follows the PRD contract:
+ *   Fork → Parent: message:new, message:edit, message:delete,
+ *                   dialog:list, dialog:update, history:batch, bridge:ready
+ *   Parent → Fork: navigate:chat, send:message, request:dialogs,
+ *                   request:history, ping
  */
 
 import rootScope from '@lib/rootScope';
-import type {Dialog} from '@appManagers/appMessagesManager';
+import type {Dialog, MyMessage} from '@appManagers/appMessagesManager';
 
 let initialized = false;
 
-/** Serialized message payload sent to parent */
-interface OqimMessageEvent {
-  peerId: string;
-  fromId: string;
-  mid: number;
-  text: string;
-  date: number;
-  isOutgoing: boolean;
-}
+// ── Serialization helpers ─────────────────────────────────
 
-/** Serialized dialog payload sent to parent */
-interface OqimDialogEvent {
-  peerId: string;
-  topMessage: number;
-  unreadCount: number;
-  unreadMentionsCount: number;
-  folderId: number;
-}
-
-/** Commands the parent can send to the fork */
-type OqimCommand =
-  | {type: 'oqim:openChat'; payload: {peerId: string}}
-  | {type: 'oqim:sendMessage'; payload: {peerId: string; text: string}}
-  | {type: 'oqim:getDialogs'; payload?: {limit?: number}}
-  | {type: 'oqim:ping'};
-
-function serializeDialog(peerId: PeerId, dialog: Dialog): OqimDialogEvent {
+function serializeMessage(msg: MyMessage) {
+  const m = msg as any;
   return {
-    peerId: String(peerId),
+    chatId: String(m.peerId),
+    senderId: String(m.fromId ?? m.peerId),
+    messageId: m.mid,
+    text: m.message ?? '',
+    date: m.date,
+    isOutgoing: !!m.pFlags?.out,
+    mediaType: m.media?._ ?? null,
+    replyToMsgId: m.reply_to?.reply_to_msg_id ?? null
+  };
+}
+
+function serializeDialog(peerId: PeerId, dialog: Dialog) {
+  return {
+    chatId: String(peerId),
     topMessage: dialog.top_message,
     unreadCount: dialog.unread_count ?? 0,
     unreadMentionsCount: dialog.unread_mentions_count ?? 0,
@@ -53,37 +41,37 @@ function serializeDialog(peerId: PeerId, dialog: Dialog): OqimDialogEvent {
 }
 
 function postToParent(type: string, payload: unknown) {
-  if(window.parent === window) return; // not in iframe
+  if(window.parent === window) return;
   window.parent.postMessage({type, payload}, '*');
 }
 
-/** Handle commands from the OQIM parent frame */
+// ── Inbound commands from parent ──────────────────────────
+
 async function handleParentCommand(event: MessageEvent) {
-  const data = event.data as OqimCommand;
+  const data = event.data;
   if(!data?.type?.startsWith('oqim:')) return;
 
   const managers = rootScope.managers;
   if(!managers) return;
 
   switch(data.type) {
-    case 'oqim:openChat': {
-      const {peerId} = data.payload;
-      // Use dynamic import to avoid circular dependency
+    case 'navigate:chat': {
+      const {chatId} = data.payload;
       const {default: appImManager} = await import('@lib/appImManager');
-      appImManager.setInnerPeer({peerId: peerId.toPeerId()});
+      appImManager.setInnerPeer({peerId: chatId.toPeerId()});
       break;
     }
 
-    case 'oqim:sendMessage': {
-      const {peerId, text} = data.payload;
+    case 'send:message': {
+      const {chatId, text} = data.payload;
       managers.appMessagesManager.sendText({
-        peerId: peerId.toPeerId(),
+        peerId: chatId.toPeerId(),
         text
       });
       break;
     }
 
-    case 'oqim:getDialogs': {
+    case 'request:dialogs': {
       const limit = data.payload?.limit ?? 100;
       const result = await managers.dialogsStorage.getDialogs({
         filterId: 0,
@@ -92,23 +80,101 @@ async function handleParentCommand(event: MessageEvent) {
       const dialogs = result.dialogs
       .filter((d): d is Dialog => d._ === 'dialog')
       .map((d) => serializeDialog(d.peerId, d));
-      postToParent('tg:dialogs', dialogs);
+      postToParent('dialog:list', dialogs);
       break;
     }
 
-    case 'oqim:ping': {
-      postToParent('tg:pong', {ts: Date.now()});
+    case 'request:history': {
+      const {chatId, limit = 500, outgoingOnly = false} = data.payload ?? {};
+      await fetchAndSendHistory(chatId, limit, outgoingOnly);
+      break;
+    }
+
+    case 'ping': {
+      postToParent('pong', {ts: Date.now()});
       break;
     }
   }
 }
 
-/** Initialize the bridge — call after auth */
+// ── History batch reader ──────────────────────────────────
+
+async function fetchAndSendHistory(
+  chatId?: string,
+  limit: number = 500,
+  outgoingOnly: boolean = false
+) {
+  const managers = rootScope.managers;
+  if(!managers) return;
+
+  // If no chatId, send outgoing messages across all DMs (for voice profile)
+  if(!chatId) {
+    const dialogResult = await managers.dialogsStorage.getDialogs({filterId: 0, limit: 50});
+    const allMessages: ReturnType<typeof serializeMessage>[] = [];
+
+    for(const d of dialogResult.dialogs) {
+      if(d._ !== 'dialog') continue;
+      try {
+        const history = await managers.appMessagesManager.getHistory({
+          peerId: d.peerId,
+          limit: Math.min(limit, 100),
+          offsetId: 0
+        });
+        for(const msg of history.messages) {
+          const m = msg as any;
+          if(outgoingOnly && !m.pFlags?.out) continue;
+          allMessages.push(serializeMessage(msg));
+          if(allMessages.length >= limit) break;
+        }
+      } catch{
+        // Skip chats that fail to load
+      }
+      if(allMessages.length >= limit) break;
+    }
+
+    postToParent('history:batch', {messages: allMessages, total: allMessages.length});
+    return;
+  }
+
+  // Specific chat history
+  try {
+    const history = await managers.appMessagesManager.getHistory({
+      peerId: chatId.toPeerId(),
+      limit,
+      offsetId: 0
+    });
+    const messages = history.messages
+    .filter((m: any) => !outgoingOnly || m.pFlags?.out)
+    .map(serializeMessage);
+    postToParent('history:batch', {chatId, messages, total: messages.length});
+  } catch{
+    postToParent('history:batch', {chatId, messages: [], total: 0, error: 'failed'});
+  }
+}
+
+// ── Auto-send dialog list on load ─────────────────────────
+
+async function sendInitialDialogList() {
+  const managers = rootScope.managers;
+  if(!managers) return;
+
+  try {
+    const result = await managers.dialogsStorage.getDialogs({filterId: 0, limit: 100});
+    const dialogs = result.dialogs
+    .filter((d): d is Dialog => d._ === 'dialog')
+    .map((d) => serializeDialog(d.peerId, d));
+    postToParent('dialog:list', dialogs);
+  } catch{
+    // Dialog list may not be ready yet — parent can request:dialogs later
+  }
+}
+
+// ── Initialize ────────────────────────────────────────────
+
 export function initOqimBridge() {
   if(initialized) return;
   initialized = true;
 
-  // Skip if not embedded in an iframe
   if(window.parent === window) {
     console.log('[OQIM Bridge] Not in iframe, bridge disabled');
     return;
@@ -116,49 +182,55 @@ export function initOqimBridge() {
 
   console.log('[OQIM Bridge] Initializing...');
 
-  // 0. Apply OQIM theme (Minimal White palette, Geist font, hide sidebar)
+  // Apply OQIM theme
   document.documentElement.classList.add('oqim-embed');
 
-  // 1. Listen for commands from parent
+  // Listen for commands from parent
   window.addEventListener('message', handleParentCommand);
 
-  // 2. Forward new incoming messages to parent
+  // message:new — new messages (incoming + outgoing)
   rootScope.addEventListener('history_multiappend', (message) => {
-    const msg = message as any;
-    const event: OqimMessageEvent = {
-      peerId: String(msg.peerId),
-      fromId: String(msg.fromId ?? msg.peerId),
-      mid: msg.mid,
-      text: msg.message ?? '',
-      date: msg.date,
-      isOutgoing: !!msg.pFlags?.out
-    };
-    postToParent('tg:newMessage', event);
+    postToParent('message:new', serializeMessage(message));
   });
 
-  // 3. Forward dialog list changes to parent
+  // message:edit — edited messages
+  rootScope.addEventListener('message_edit', ({message}) => {
+    postToParent('message:edit', serializeMessage(message));
+  });
+
+  // message:delete — deleted messages
+  rootScope.addEventListener('history_delete', ({peerId, msgs}) => {
+    postToParent('message:delete', {
+      chatId: String(peerId),
+      messageIds: [...msgs]
+    });
+  });
+
+  // dialog:update — dialog changes (new message, read state, etc.)
   rootScope.addEventListener('dialogs_multiupdate', (updates) => {
-    const dialogs: OqimDialogEvent[] = [];
+    const dialogs: ReturnType<typeof serializeDialog>[] = [];
     for(const [peerId, data] of updates) {
       if(data.dialog) {
         dialogs.push(serializeDialog(peerId, data.dialog));
       }
     }
     if(dialogs.length) {
-      postToParent('tg:dialogsUpdate', dialogs);
+      postToParent('dialog:update', dialogs);
     }
   });
 
-  // 4. Forward read state changes
   rootScope.addEventListener('dialog_unread', ({peerId, dialog}) => {
-    postToParent('tg:dialogUnread', {
-      peerId: String(peerId),
+    postToParent('dialog:update', [{
+      chatId: String(peerId),
       unreadCount: (dialog as Dialog).unread_count ?? 0
-    });
+    }]);
   });
 
-  // 5. Notify parent that bridge is ready
-  postToParent('tg:bridgeReady', {ts: Date.now()});
+  // Send initial dialog list
+  sendInitialDialogList();
+
+  // Notify parent that bridge is ready
+  postToParent('bridge:ready', {ts: Date.now()});
 
   console.log('[OQIM Bridge] Ready');
 }
