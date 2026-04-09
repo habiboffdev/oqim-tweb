@@ -717,5 +717,8 @@ function setDocumentLangPackProperties(langPack: LangPackDifference.langPackDiff
     } else {
       await page.mount();
     }
+
+    // OQIM: Initialize postMessage bridge after auth + page mount
+    import('@lib/oqimBridge').then(({initOqimBridge}) => initOqimBridge());
   }
 });
