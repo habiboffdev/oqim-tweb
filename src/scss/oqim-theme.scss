@@ -1,7 +1,10 @@
 /*
  * OQIM Business — Theme override for embedded mode.
- * Minimal White palette, near-black accent, Geist Variable font.
+ * Minimal White palette, near-black accent.
  * Applied when running inside the OQIM parent frame.
+ *
+ * Web K renders BOTH the chat list (LeftColumn) and messages (MiddleColumn).
+ * OQIM adds the DM Assistant panel on the right via the parent frame.
  */
 
 html.oqim-embed {
@@ -34,34 +37,7 @@ html.oqim-embed {
   /* ── Green (online, read checks): keep but mute ── */
   --green-color: #4ade80;
 
-  /* ── Font: Geist Variable (loaded by OQIM parent) ── */
-  --font-family: 'Geist Variable', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  --font-family-monospace: 'Geist Mono Variable', 'Roboto Mono', monospace;
-
-  body {
-    font-family: var(--font-family) !important;
-  }
-
-  /* ── Hide left sidebar (OQIM has its own chat list) ── */
-  #LeftColumn {
-    display: none !important;
-  }
-
-  /* ── Expand middle column to full width ── */
-  #MiddleColumn {
-    position: absolute !important;
-    left: 0 !important;
-    width: 100% !important;
-    max-width: 100% !important;
-    transform: none !important;
-  }
-
-  /* ── Reduce visual noise in embedded mode ── */
-  .topbar {
-    border-bottom: 1px solid var(--border-color);
-  }
-
-  /* ── Scrollbar: minimal, Notion-like ── */
+  /* ── Scrollbar: minimal ── */
   ::-webkit-scrollbar {
     width: 6px;
   }
