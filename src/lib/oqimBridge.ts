@@ -116,6 +116,9 @@ export function initOqimBridge() {
 
   console.log('[OQIM Bridge] Initializing...');
 
+  // 0. Apply OQIM theme (Minimal White palette, Geist font, hide sidebar)
+  document.documentElement.classList.add('oqim-embed');
+
   // 1. Listen for commands from parent
   window.addEventListener('message', handleParentCommand);
 

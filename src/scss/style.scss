@@ -126,3 +126,6 @@
 @use "partials/pages/password";
 
 @use "partials/passcodeLockScreen";
+
+// OQIM: embedded theme override (activated by oqim-embed class on html)
+@use "oqim-theme";
