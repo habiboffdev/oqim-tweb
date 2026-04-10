@@ -142,7 +142,7 @@ async function fetchAndSendHistory(
   // Specific chat history
   try {
     const history = await managers.appMessagesManager.getHistory({
-      peerId: chatId.toPeerId(),
+      peerId: String(chatId).toPeerId(),
       limit,
       offsetId: 0
     });
