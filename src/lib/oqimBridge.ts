@@ -190,19 +190,43 @@ export function initOqimBridge() {
   // Listen for commands from parent
   window.addEventListener('message', handleParentCommand);
 
-  // Skip initial sync — only forward messages that arrive AFTER init.
-  // Web K fires history_multiappend for hundreds of cached messages on load.
-  // We wait 5 seconds for the initial sync to settle, then start forwarding.
-  let forwardingEnabled = false;
-  setTimeout(() => {
-    forwardingEnabled = true;
-    console.log('[OQIM Bridge] Message forwarding enabled');
-  }, 5000);
+  // Batch message forwarding: collect messages for 500ms then send as one batch.
+  // This prevents flooding the parent with hundreds of individual postMessages
+  // when Web K syncs on reconnect. The backend deduplicates by telegram_message_id.
+  let pendingMessages: ReturnType<typeof serializeMessage>[] = [];
+  let batchTimer: ReturnType<typeof setTimeout> | null = null;
+  const forwardedMids = new Set<number>();
 
-  // message:new — new messages (incoming + outgoing), only after init settles
+  function flushBatch() {
+    if(pendingMessages.length === 0) return;
+    if(pendingMessages.length === 1) {
+      postToParent('message:new', pendingMessages[0]);
+    } else {
+      postToParent('message:batch', {messages: pendingMessages, count: pendingMessages.length});
+    }
+    pendingMessages = [];
+    batchTimer = null;
+  }
+
   rootScope.addEventListener('history_multiappend', (message) => {
-    if(!forwardingEnabled) return;
-    postToParent('message:new', serializeMessage(message));
+    const m = message as any;
+    // Dedup within session
+    if(forwardedMids.has(m.mid)) return;
+    forwardedMids.add(m.mid);
+    if(forwardedMids.size > 10000) {
+      const first = forwardedMids.values().next().value;
+      if(first !== undefined) forwardedMids.delete(first);
+    }
+
+    pendingMessages.push(serializeMessage(message));
+
+    // Flush after 500ms of quiet, or immediately if batch gets large
+    if(batchTimer) clearTimeout(batchTimer);
+    if(pendingMessages.length >= 50) {
+      flushBatch();
+    } else {
+      batchTimer = setTimeout(flushBatch, 500);
+    }
   });
 
   // message:edit — edited messages
