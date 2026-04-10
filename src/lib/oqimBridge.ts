@@ -31,13 +31,15 @@ function serializeMessage(msg: MyMessage) {
   };
 }
 
-function serializeDialog(peerId: PeerId, dialog: Dialog) {
+function serializeDialog(peerId: PeerId, dialog: Dialog, displayName?: string) {
   return {
     chatId: String(peerId),
     topMessage: dialog.top_message,
     unreadCount: dialog.unread_count ?? 0,
     unreadMentionsCount: dialog.unread_mentions_count ?? 0,
-    folderId: dialog.folder_id ?? 0
+    folderId: dialog.folder_id ?? 0,
+    isUser: peerId.isUser(),
+    displayName: displayName || String(peerId)
   };
 }
 
@@ -150,7 +152,7 @@ async function fetchAndSendHistory(
     .filter((m: any) => !outgoingOnly || m.pFlags?.out)
     .map(serializeMessage);
     postToParent('history:batch', {chatId, messages, total: messages.length});
-  } catch{
+  } catch(e) {
     postToParent('history:batch', {chatId, messages: [], total: 0, error: 'failed'});
   }
 }
@@ -162,13 +164,22 @@ async function sendInitialDialogList() {
   if(!managers) return;
 
   try {
-    const result = await managers.dialogsStorage.getDialogs({filterId: 0, limit: 100});
-    const dialogs = result.dialogs
-    .filter((d): d is Dialog => d._ === 'dialog')
-    .map((d) => serializeDialog(d.peerId, d));
+    const result = await managers.dialogsStorage.getDialogs({filterId: 0, limit: 200});
+    const dialogs: ReturnType<typeof serializeDialog>[] = [];
+    for(const d of result.dialogs) {
+      if(d._ !== 'dialog') continue;
+      if(!d.peerId.isUser()) continue;
+      // Get display name — try sync cache first, fall back to chatId
+      let name = String(d.peerId);
+      try {
+        const title = await managers.appPeersManager.getPeerTitle({peerId: d.peerId});
+        if(title) name = title;
+      } catch{ /* use chatId as fallback */ }
+      dialogs.push(serializeDialog(d.peerId, d, name));
+    }
     postToParent('dialog:list', dialogs);
-  } catch{
-    // Dialog list may not be ready yet — parent can request:dialogs later
+  } catch(e) {
+    console.error('[OQIM Bridge] sendInitialDialogList failed:', e);
   }
 }
 
@@ -257,7 +268,7 @@ export function initOqimBridge() {
   rootScope.addEventListener('dialogs_multiupdate', (updates) => {
     const dialogs: ReturnType<typeof serializeDialog>[] = [];
     for(const [peerId, data] of updates) {
-      if(data.dialog) {
+      if(data.dialog && peerId.isUser()) {
         dialogs.push(serializeDialog(peerId, data.dialog));
       }
     }
@@ -267,6 +278,7 @@ export function initOqimBridge() {
   });
 
   rootScope.addEventListener('dialog_unread', ({peerId, dialog}) => {
+    if(!peerId.isUser()) return;
     postToParent('dialog:update', [{
       chatId: String(peerId),
       unreadCount: (dialog as Dialog).unread_count ?? 0
