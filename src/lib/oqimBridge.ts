@@ -190,8 +190,18 @@ export function initOqimBridge() {
   // Listen for commands from parent
   window.addEventListener('message', handleParentCommand);
 
-  // message:new — new messages (incoming + outgoing)
+  // Skip initial sync — only forward messages that arrive AFTER init.
+  // Web K fires history_multiappend for hundreds of cached messages on load.
+  // We wait 5 seconds for the initial sync to settle, then start forwarding.
+  let forwardingEnabled = false;
+  setTimeout(() => {
+    forwardingEnabled = true;
+    console.log('[OQIM Bridge] Message forwarding enabled');
+  }, 5000);
+
+  // message:new — new messages (incoming + outgoing), only after init settles
   rootScope.addEventListener('history_multiappend', (message) => {
+    if(!forwardingEnabled) return;
     postToParent('message:new', serializeMessage(message));
   });
 
