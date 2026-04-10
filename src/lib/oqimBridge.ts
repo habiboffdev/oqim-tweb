@@ -294,7 +294,7 @@ export function initOqimBridge() {
   // auth:completed — emit user data on init (bridge only loads after auth)
   const emitAuthCompleted = async() => {
     try {
-      const self = rootScope.managers.appUsersManager.getSelf();
+      const self = await rootScope.managers.appUsersManager.getSelf();
       if(self) {
         postToParent('auth:completed', {
           userId: String(self.id),
