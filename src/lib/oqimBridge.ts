@@ -143,17 +143,27 @@ async function fetchAndSendHistory(
 
   // Specific chat history
   try {
+    const peerId = String(chatId).toPeerId();
     const history = await managers.appMessagesManager.getHistory({
-      peerId: String(chatId).toPeerId(),
+      peerId,
       limit,
       offsetId: 0
     });
-    const messages = history.messages
-    .filter((m: any) => !outgoingOnly || m.pFlags?.out)
+    // history.messages may be undefined if not cached — load from IDs
+    let rawMessages = history?.messages;
+    if(!rawMessages && history?.history?.length) {
+      rawMessages = await Promise.all(
+        history.history.map((mid: number) =>
+          managers.appMessagesManager.getMessageByPeer(peerId, mid)
+        )
+      );
+    }
+    const messages = (rawMessages || [])
+    .filter((m: any) => m && (!outgoingOnly || m.pFlags?.out))
     .map(serializeMessage);
     postToParent('history:batch', {chatId, messages, total: messages.length});
-  } catch(e) {
-    postToParent('history:batch', {chatId, messages: [], total: 0, error: 'failed'});
+  } catch(e: any) {
+    postToParent('history:batch', {chatId, messages: [], total: 0, error: String(e?.message || e)});
   }
 }
 
@@ -164,19 +174,23 @@ async function sendInitialDialogList() {
   if(!managers) return;
 
   try {
-    const result = await managers.dialogsStorage.getDialogs({filterId: 0, limit: 200});
+    // Fetch all loaded dialogs — Web K caches them from Telegram on login.
+    // filterId: 0 = "All Chats". We fetch a large batch then filter to human DMs.
+    const result = await managers.dialogsStorage.getDialogs({filterId: 0, limit: 500});
     const dialogs: ReturnType<typeof serializeDialog>[] = [];
     for(const d of result.dialogs) {
       if(d._ !== 'dialog') continue;
       if(!d.peerId.isUser()) continue;
-      // Get display name — try sync cache first, fall back to chatId
+      try { if(await managers.appUsersManager.isBot(d.peerId.toUserId())) continue; } catch{}
+
       let name = String(d.peerId);
       try {
-        const title = await managers.appPeersManager.getPeerTitle({peerId: d.peerId});
-        if(title) name = title;
+        const user = await managers.appUsersManager.getUser(d.peerId.toUserId());
+        if(user) name = [user.first_name, user.last_name].filter(Boolean).join(' ') || name;
       } catch{ /* use chatId as fallback */ }
       dialogs.push(serializeDialog(d.peerId, d, name));
     }
+    console.log(`[OQIM Bridge] dialog:list — ${dialogs.length} human DMs from ${result.dialogs.length} total`);
     postToParent('dialog:list', dialogs);
   } catch(e) {
     console.error('[OQIM Bridge] sendInitialDialogList failed:', e);
