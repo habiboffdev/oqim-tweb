@@ -299,20 +299,16 @@ export function initOqimBridge() {
     }]);
   });
 
-  // chat:opened — detect when user clicks a chat in Web K
-  // Monitor hash changes (Web K updates hash to #/im?p=<peerId> on navigation)
-  const notifyActivePeer = () => {
-    const hash = window.location.hash;
-    const match = hash.match(/[?&]p=(-?\d+)/);
-    if(match) {
-      postToParent('chat:opened', {chatId: match[1]});
-    }
-  };
-  window.addEventListener('hashchange', notifyActivePeer);
-  // Also use Navigation API if available
-  if('navigation' in window) {
-    (window as any).navigation.addEventListener('navigatesuccess', notifyActivePeer);
-  }
+  // chat:opened — detect when user opens a chat in Web K
+  // Hook into appImManager's peer_changed event (reliable, works with all navigation methods)
+  import('@lib/appImManager').then(({default: appImManager}) => {
+    appImManager.addEventListener('peer_changed', (chat: any) => {
+      const peerId = chat?.peerId;
+      if(peerId && peerId.isUser()) {
+        postToParent('chat:opened', {chatId: String(peerId)});
+      }
+    });
+  }).catch(() => {});
 
   // Send initial dialog list
   sendInitialDialogList();
