@@ -4,7 +4,8 @@
  *
  * Event schema follows the PRD contract:
  *   Fork → Parent: message:new, message:edit, message:delete,
- *                   dialog:list, dialog:update, history:batch, bridge:ready
+ *                   dialog:list, dialog:update, history:batch, bridge:ready,
+ *                   auth:completed
  *   Parent → Fork: navigate:chat, send:message, request:dialogs,
  *                   request:history, ping
  */
@@ -289,6 +290,29 @@ export function initOqimBridge() {
 
   // Send initial dialog list
   sendInitialDialogList();
+
+  // auth:completed — emit user data on init (bridge only loads after auth)
+  const emitAuthCompleted = async() => {
+    try {
+      const self = await managers.appUsersManager.getSelf();
+      if(self) {
+        postToParent('auth:completed', {
+          userId: String(self.id),
+          phone: self.phone ? `+${self.phone}` : '',
+          firstName: self.first_name || '',
+          lastName: self.last_name || ''
+        });
+      }
+    } catch(e) {
+      console.warn('[OQIM Bridge] Failed to get self user:', e);
+    }
+  };
+  emitAuthCompleted();
+
+  // Also emit on account switch
+  rootScope.addEventListener('account_logged_in', () => {
+    emitAuthCompleted();
+  });
 
   // Notify parent that bridge is ready
   postToParent('bridge:ready', {ts: Date.now()});
