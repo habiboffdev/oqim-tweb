@@ -19,7 +19,9 @@ const mockManagers = {
   },
   appMessagesManager: {
     sendText: vi.fn(),
-    getHistory: vi.fn()
+    getHistory: vi.fn(),
+    readHistory: vi.fn().mockResolvedValue(undefined),
+    setTyping: vi.fn().mockResolvedValue(false)
   }
 };
 
@@ -458,5 +460,94 @@ describe('send:message', () => {
     });
 
     delete (String.prototype as any).toPeerId;
+  });
+});
+
+// ── Contract: mark:read ───────────────────────────────────
+
+describe('mark:read', () => {
+  it('calls readHistory with peerId and maxId when mark:read command received', async() => {
+    (String.prototype as any).toPeerId = function() { return +this; };
+
+    await initBridge();
+
+    window.dispatchEvent(new MessageEvent('message', {
+      data: {type: 'mark:read', payload: {chatId: '12345', maxId: 999}}
+    }));
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockManagers.appMessagesManager.readHistory).toHaveBeenCalledWith({
+      peerId: 12345,
+      maxId: 999
+    });
+
+    delete (String.prototype as any).toPeerId;
+  });
+
+  it('uses maxId: 0 as fallback when maxId not provided', async() => {
+    (String.prototype as any).toPeerId = function() { return +this; };
+
+    await initBridge();
+
+    window.dispatchEvent(new MessageEvent('message', {
+      data: {type: 'mark:read', payload: {chatId: '12345'}}
+    }));
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockManagers.appMessagesManager.readHistory).toHaveBeenCalledWith({
+      peerId: 12345,
+      maxId: 0
+    });
+
+    delete (String.prototype as any).toPeerId;
+  });
+
+  it('does nothing when chatId is missing', async() => {
+    await initBridge();
+
+    window.dispatchEvent(new MessageEvent('message', {
+      data: {type: 'mark:read', payload: {maxId: 999}}
+    }));
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockManagers.appMessagesManager.readHistory).not.toHaveBeenCalled();
+  });
+});
+
+// ── Contract: set:typing ──────────────────────────────────
+
+describe('set:typing', () => {
+  it('calls setTyping with correct action when set:typing command received', async() => {
+    (String.prototype as any).toPeerId = function() { return +this; };
+
+    await initBridge();
+
+    window.dispatchEvent(new MessageEvent('message', {
+      data: {type: 'set:typing', payload: {chatId: '12345'}}
+    }));
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockManagers.appMessagesManager.setTyping).toHaveBeenCalledWith(
+      12345,
+      {_: 'sendMessageTypingAction'}
+    );
+
+    delete (String.prototype as any).toPeerId;
+  });
+
+  it('does nothing when chatId is missing', async() => {
+    await initBridge();
+
+    window.dispatchEvent(new MessageEvent('message', {
+      data: {type: 'set:typing', payload: {}}
+    }));
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockManagers.appMessagesManager.setTyping).not.toHaveBeenCalled();
   });
 });

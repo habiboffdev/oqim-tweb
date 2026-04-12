@@ -96,10 +96,12 @@ async function handleParentCommand(event: MessageEvent) {
     }
 
     case 'mark:read': {
-      const {chatId} = data.payload ?? {};
+      const {chatId, maxId} = data.payload ?? {};
       if(chatId) {
         const peerId = String(chatId).toPeerId();
-        managers.appMessagesManager.readHistory({peerId}).catch(() => {});
+        // maxId must be provided — without it, readHistory defaults to maxId=0 and
+        // hits the triedToReadMaxId >= 0 guard (always true), silently no-oping.
+        managers.appMessagesManager.readHistory({peerId, maxId: maxId ?? 0}).catch(() => {});
       }
       break;
     }
