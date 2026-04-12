@@ -53,7 +53,7 @@ function postToParent(type: string, payload: unknown) {
 async function handleParentCommand(event: MessageEvent) {
   const data = event.data;
   if(!data?.type || typeof data.type !== 'string') return;
-  const validPrefixes = ['navigate:', 'send:', 'request:', 'ping'];
+  const validPrefixes = ['navigate:', 'send:', 'request:', 'mark:', 'set:', 'ping'];
   if(!validPrefixes.some((p) => data.type.startsWith(p))) return;
 
   const managers = rootScope.managers;
@@ -92,6 +92,25 @@ async function handleParentCommand(event: MessageEvent) {
     case 'request:history': {
       const {chatId, limit = 500, outgoingOnly = false} = data.payload ?? {};
       await fetchAndSendHistory(chatId, limit, outgoingOnly);
+      break;
+    }
+
+    case 'mark:read': {
+      const {chatId} = data.payload ?? {};
+      if(chatId) {
+        managers.appMessagesManager.readHistory({peerId: chatId.toPeerId()});
+      }
+      break;
+    }
+
+    case 'set:typing': {
+      const {chatId, active = true} = data.payload ?? {};
+      if(chatId) {
+        if(active) {
+          managers.appMessagesManager.setTyping(chatId.toPeerId(), {_: 'sendMessageTypingAction'});
+        }
+        // Typing indicator auto-clears after 5s on Telegram's side
+      }
       break;
     }
 
