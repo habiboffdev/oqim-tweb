@@ -98,18 +98,17 @@ async function handleParentCommand(event: MessageEvent) {
     case 'mark:read': {
       const {chatId} = data.payload ?? {};
       if(chatId) {
-        managers.appMessagesManager.readHistory({peerId: chatId.toPeerId()});
+        const peerId = String(chatId).toPeerId();
+        managers.appMessagesManager.readHistory({peerId}).catch(() => {});
       }
       break;
     }
 
     case 'set:typing': {
-      const {chatId, active = true} = data.payload ?? {};
+      const {chatId} = data.payload ?? {};
       if(chatId) {
-        if(active) {
-          managers.appMessagesManager.setTyping(chatId.toPeerId(), {_: 'sendMessageTypingAction'});
-        }
-        // Typing indicator auto-clears after 5s on Telegram's side
+        const peerId = String(chatId).toPeerId();
+        managers.appMessagesManager.setTyping(peerId, {_: 'sendMessageTypingAction'}).catch(() => {});
       }
       break;
     }
