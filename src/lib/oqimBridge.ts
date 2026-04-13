@@ -78,14 +78,7 @@ async function handleParentCommand(event: MessageEvent) {
 
     case 'request:dialogs': {
       const limit = data.payload?.limit ?? 100;
-      const result = await managers.dialogsStorage.getDialogs({
-        filterId: 0,
-        limit
-      });
-      const dialogs = result.dialogs
-      .filter((d): d is Dialog => d._ === 'dialog')
-      .map((d) => serializeDialog(d.peerId, d));
-      postToParent('dialog:list', dialogs);
+      await sendDialogList(limit);
       break;
     }
 
@@ -111,6 +104,78 @@ async function handleParentCommand(event: MessageEvent) {
       if(chatId) {
         const peerId = String(chatId).toPeerId();
         managers.appMessagesManager.setTyping(peerId, {_: 'sendMessageTypingAction'}).catch(() => {});
+      }
+      break;
+    }
+
+    case 'request:channel-list': {
+      const limit = data.payload?.limit ?? 200;
+      const result = await managers.dialogsStorage.getDialogs({filterId: 0, limit});
+      const channels: Record<string, unknown>[] = [];
+      for(const d of result.dialogs) {
+        if(d._ !== 'dialog') continue;
+        if(d.peerId.isUser()) continue;
+        let name = String(d.peerId);
+        let memberCount = 0;
+        let isCreator = false;
+        let isAdmin = false;
+        let isBroadcast = false;
+        try {
+          const chat = await managers.appChatsManager.getChat(d.peerId.toChatId());
+          if(chat) {
+            const c = chat as any;
+            name = c.title || name;
+            memberCount = c.participants_count || 0;
+            isCreator = !!c.pFlags?.creator;
+            isAdmin = !!c.admin_rights || isCreator;
+            isBroadcast = !!c.pFlags?.broadcast;
+          }
+        } catch{ /* fallback */ }
+        channels.push({
+          chatId: String(d.peerId),
+          displayName: name,
+          topMessage: d.top_message,
+          unreadCount: d.unread_count ?? 0,
+          memberCount: memberCount,
+          isCreator: isCreator,
+          isAdmin: isAdmin,
+          isBroadcast: isBroadcast
+        });
+      }
+      postToParent('channel:list', channels);
+      break;
+    }
+
+    case 'request:channel-posts': {
+      const {channelId, limit = 200} = data.payload ?? {};
+      if(!channelId) break;
+      try {
+        const peerId = String(channelId).toPeerId();
+        const history = await managers.appMessagesManager.getHistory({
+          peerId,
+          limit,
+          offsetId: 0
+        });
+        let rawMessages = history?.messages;
+        if(!rawMessages && history?.history?.length) {
+          rawMessages = await Promise.all(
+            history.history.map((mid: number) =>
+              managers.appMessagesManager.getMessageByPeer(peerId, mid)
+            )
+          );
+        }
+        const posts = (rawMessages || [])
+        .filter((m: any) => m && m.message) // only posts with text
+        .map((m: any) => ({
+          postId: m.mid,
+          text: m.message ?? '',
+          date: m.date,
+          mediaType: m.media?._ ?? null,
+          hasPhoto: !!(m.media && (m.media._ === 'messageMediaPhoto' || m.media.photo))
+        }));
+        postToParent('channel-posts:batch', {channelId, posts, total: posts.length});
+      } catch(e: any) {
+        postToParent('channel-posts:batch', {channelId, posts: [], total: 0, error: String(e?.message || e)});
       }
       break;
     }
@@ -189,19 +254,17 @@ async function fetchAndSendHistory(
 
 // ── Auto-send dialog list on load ─────────────────────────
 
-async function sendInitialDialogList() {
+async function sendDialogList(limit: number = 100) {
   const managers = rootScope.managers;
   if(!managers) return;
 
   try {
-    // Fetch all loaded dialogs — Web K caches them from Telegram on login.
-    // filterId: 0 = "All Chats". We fetch a large batch then filter to human DMs.
-    const result = await managers.dialogsStorage.getDialogs({filterId: 0, limit: 500});
+    const result = await managers.dialogsStorage.getDialogs({filterId: 0, limit});
     const dialogs: ReturnType<typeof serializeDialog>[] = [];
     for(const d of result.dialogs) {
       if(d._ !== 'dialog') continue;
       if(!d.peerId.isUser()) continue;
-      try { if(await managers.appUsersManager.isBot(d.peerId.toUserId())) continue; } catch{}
+      // Skip bot check (expensive per-dialog call) — filter backend-side instead
 
       let name = String(d.peerId);
       try {
@@ -213,7 +276,7 @@ async function sendInitialDialogList() {
     console.log(`[OQIM Bridge] dialog:list — ${dialogs.length} human DMs from ${result.dialogs.length} total`);
     postToParent('dialog:list', dialogs);
   } catch(e) {
-    console.error('[OQIM Bridge] sendInitialDialogList failed:', e);
+    console.error('[OQIM Bridge] sendDialogList failed:', e);
   }
 }
 
@@ -230,8 +293,22 @@ export function initOqimBridge() {
 
   console.log('[OQIM Bridge] Initializing...');
 
-  // Apply OQIM theme
+  // Apply OQIM embed mode — hide left sidebar, expand chat view
   document.documentElement.classList.add('oqim-embed');
+  const embedStyle = document.createElement('style');
+  embedStyle.id = 'oqim-embed-style';
+  embedStyle.textContent = `
+    html.oqim-embed #column-left { display: none !important }
+    html.oqim-embed .sidebar-left-placeholder { display: none !important }
+    html.oqim-embed .sidebar-left-overlay { display: none !important }
+    html.oqim-embed #column-center {
+      flex: 1 1 100% !important;
+      max-width: 100% !important;
+      width: 100% !important;
+    }
+    html.oqim-embed #column-right { display: none !important }
+  `;
+  document.head.appendChild(embedStyle);
 
   // Listen for commands from parent
   window.addEventListener('message', handleParentCommand);
@@ -256,6 +333,9 @@ export function initOqimBridge() {
 
   rootScope.addEventListener('history_multiappend', (message) => {
     const m = message as any;
+    // Only forward messages from user DMs — skip channels, groups, bots
+    if(!m.peerId || !m.peerId.isUser()) return;
+
     // Dedup within session
     if(forwardedMids.has(m.mid)) return;
     forwardedMids.add(m.mid);
@@ -330,8 +410,8 @@ export function initOqimBridge() {
     });
   }).catch(() => {});
 
-  // Send initial dialog list
-  sendInitialDialogList();
+  // Dialog list is NOT auto-sent on init — fetched on-demand via request:dialogs.
+  // This saves 3-8s of startup time (500 dialogs + name resolution).
 
   // auth:completed — emit user data on init (bridge only loads after auth)
   const emitAuthCompleted = async() => {
